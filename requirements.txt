@@ -1,0 +1,14 @@
+albumentations==2.0.8
+cellpose==4.2.1.1
+cellseg_models_pytorch==0.1.30
+numpy==2.5.1
+opencv-python==4.11.0.86
+pandas==3.0.5
+scikit-image==0.25.2
+scikit-learn==1.9.0
+scipy==1.17.1
+segment-anything==1.0
+timm==1.0.28
+torch==2.13.0+cu126
+torchvision==0.28.0+cu126
+tqdm==4.70.0
