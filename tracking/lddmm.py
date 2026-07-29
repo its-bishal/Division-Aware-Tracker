@@ -1,9 +1,11 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from geomloss import SamplesLoss
 
 class LDDMMMatcher(nn.Module):
-    def __init__(self, iterations=50, step_size=0.01, sigma=10.0, device='cpu'):
+    def __init__(self, iterations=50, step_size=0.01, sigma=10.0, 
+                 loss_type='mse', blur=0.05, reach=0.5, device='cpu'):
         """
         Simplified PyTorch-based Large Deformation Diffeomorphic Metric Mapping (LDDMM) inspired matching.
         Instead of full EPDiff PDE solving, this uses a heavily regularized displacement field optimization
@@ -13,7 +15,13 @@ class LDDMMMatcher(nn.Module):
         self.iterations = iterations
         self.step_size = step_size
         self.sigma = sigma
+        self.loss_type = loss_type
         self.device = device
+        
+        if self.loss_type == 'sinkhorn':
+            if SamplesLoss is None:
+                raise ImportError("geomloss is required for Sinkhorn loss. Please pip install geomloss.")
+            self.sinkhorn_loss = SamplesLoss(loss="sinkhorn", p=2, blur=blur, reach=reach)
         
         # Create a smoothing kernel for regularization
         kernel_size = int(sigma * 3)
@@ -88,8 +96,36 @@ class LDDMMMatcher(nn.Module):
             warped_source = F.grid_sample(source, grid, align_corners=True, padding_mode='zeros')
             
             # Calculate loss (Image similarity + regularization)
-            # Image similarity: MSE
-            sim_loss = F.mse_loss(warped_source, target)
+            if self.loss_type == 'sinkhorn':
+                # Instead of downsampling, extract only the "active" pixels (foreground).
+                # This drastically reduces the number of points for Optimal Transport
+                # while preserving 100% of the original resolution and accuracy!
+                
+                active_mask = (warped_source > 1e-3) | (target > 1e-3)
+                if not active_mask.any():
+                    # Fallback if somehow perfectly empty
+                    active_mask[..., H//2, W//2] = True
+                    
+                active_mask_flat = active_mask.view(-1)
+                
+                # Extract weights for active pixels only
+                weights_source = warped_source.view(-1)[active_mask_flat].unsqueeze(0)
+                weights_target = target.view(-1)[active_mask_flat].unsqueeze(0)
+                
+                # Generate full grid and extract coords for active pixels
+                y_d, x_d = torch.meshgrid(
+                    torch.linspace(-1, 1, H, device=self.device),
+                    torch.linspace(-1, 1, W, device=self.device),
+                    indexing='ij'
+                )
+                full_grid = torch.stack([x_d, y_d], dim=-1).view(-1, 2)
+                coords = full_grid[active_mask_flat].unsqueeze(0)
+                
+                # Sinkhorn divergence on the sparse subset
+                sim_loss = self.sinkhorn_loss(weights_source, coords, weights_target, coords)
+            else:
+                # Default Image similarity: MSE
+                sim_loss = F.mse_loss(warped_source, target)
             
             # Regularization: kinetic energy of the velocity field
             reg_loss = torch.mean(v_smooth ** 2)
@@ -115,6 +151,9 @@ def compute_lddmm_cost(parent_mask, daughter_mask, config):
         iterations=config.lddmm_iterations,
         step_size=config.lddmm_step_size,
         sigma=config.lddmm_sigma,
+        loss_type=getattr(config, 'lddmm_loss_type', 'mse'),
+        blur=getattr(config, 'lddmm_sinkhorn_blur', 0.05),
+        reach=getattr(config, 'lddmm_sinkhorn_reach', 0.5),
         device='cpu' # Assuming CPU for compatibility, can be changed to 'cuda'
     )
     

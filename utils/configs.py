@@ -23,3 +23,8 @@ class TrackerHyperParams:
     lddmm_iterations = 50 # Number of iterations for diffeomorphic matching optimization
     lddmm_sigma = 10.0 # Smoothing parameter for LDDMM vector field
     lddmm_step_size = 0.01 # Step size for LDDMM optimization
+    
+    # GeomLoss / Sinkhorn hyperparameters
+    lddmm_loss_type = 'sinkhorn' # 'mse' or 'sinkhorn'
+    lddmm_sinkhorn_blur = 0.05 # Entropic regularization for Sinkhorn
+    lddmm_sinkhorn_reach = 0.5 # Penalty for mass creation/destruction (Unbalanced OT)
