@@ -4,3 +4,4 @@
 images
 output_tracking
 unet_carvana_scale0.5.pth
+tracking/__pycache__

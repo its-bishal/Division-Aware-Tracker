@@ -6,6 +6,7 @@ from .tracks import Region
 from .recorder import Recorder
 from .kalman_filter import KalmanFilter
 from utils.configs import TrackerHyperParams
+from .lddmm import compute_lddmm_cost
 
 
 class BiTracker:
@@ -123,6 +124,65 @@ class BiTracker:
         unassigned_detections_id = sorted(set(detections_id) - {pairs[1] for pairs in assigned_pairs_id})
         return assigned_pairs_id, unassigned_tracks_id, unassigned_detections_id
 
+    def _assignment_lddmm(self, unassigned_tracks_id, unassigned_detections_id):
+        lddmm_pair_id = []
+        new_unassigned_tracks_id = list(unassigned_tracks_id)
+        new_unassigned_detections_id = list(unassigned_detections_id)
+        
+        if compute_lddmm_cost is None:
+            return lddmm_pair_id, new_unassigned_tracks_id, new_unassigned_detections_id
+
+        if len(new_unassigned_detections_id) < 2 or len(new_unassigned_tracks_id) == 0:
+            return lddmm_pair_id, new_unassigned_tracks_id, new_unassigned_detections_id
+
+        from itertools import combinations
+        
+        for track_id in unassigned_tracks_id:
+            track = self.tracks.get_track_by_id(track_id)
+            if len(track.nodes) == 0:
+                continue
+                
+            parent_node = track.nodes[-1]
+            parent_bbox = parent_node.bbox
+            parent_mask = parent_node.region.mask
+            parent_center = ((parent_bbox[0] + parent_bbox[2]) / 2, (parent_bbox[1] + parent_bbox[3]) / 2)
+            
+            candidates = []
+            for det_id in new_unassigned_detections_id:
+                region = self.recorder.get_region(self.frame_index, det_id)
+                if region is None:
+                    continue
+                bbox = region.bbox
+                center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
+                dist = np.sqrt((center[0] - parent_center[0])**2 + (center[1] - parent_center[1])**2)
+                
+                if dist < TrackerHyperParams.lddmm_distance_threshold:
+                    candidates.append((det_id, region))
+            
+            if len(candidates) >= 2:
+                best_energy = float('inf')
+                best_pair = None
+                
+                for (det1, reg1), (det2, reg2) in combinations(candidates, 2):
+                    combined_mask = np.logical_or(reg1.mask > 0, reg2.mask > 0).astype(np.float32)
+                    try:
+                        energy = compute_lddmm_cost(parent_mask, combined_mask, TrackerHyperParams)
+                    except Exception as e:
+                        print(f"LDDMM computation failed: {e}")
+                        energy = float('inf')
+                        
+                    if energy < best_energy and energy < TrackerHyperParams.lddmm_energy_threshold:
+                        best_energy = energy
+                        best_pair = (det1, det2)
+                
+                if best_pair is not None:
+                    lddmm_pair_id.append((track_id, best_pair[0], best_pair[1]))
+                    new_unassigned_tracks_id.remove(track_id)
+                    new_unassigned_detections_id.remove(best_pair[0])
+                    new_unassigned_detections_id.remove(best_pair[1])
+                    
+        return lddmm_pair_id, new_unassigned_tracks_id, new_unassigned_detections_id
+
     def update_detections(self, detections, mask, area_th=20, edge_pixel=10):
         def bbox_area(bbox):
             return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
@@ -187,6 +247,13 @@ class BiTracker:
                 continue_pairs_id, mitosis_pair_id, unassigned_tracks_id, unassigned_detections_id = \
                     self._assignment_mitosis(seg_ious, assigned_pairs_id, unassigned_tracks_id, 
                             unassigned_detections_id, ids, detections_id=None, mitosis_th=self.mitosis_th)
+
+                # Add LDDMM assignment for remaining unassigned ones
+                lddmm_pair_id, unassigned_tracks_id, unassigned_detections_id = \
+                    self._assignment_lddmm(unassigned_tracks_id, unassigned_detections_id)
+                
+                # Combine LDDMM discoveries with standard mitosis discoveries
+                mitosis_pair_id.extend(lddmm_pair_id)
 
                 # update the tracks for no mitosis
                 for track_id, det_id in continue_pairs_id:

@@ -17,4 +17,9 @@ class TrackerHyperParams:
     max_frame_gap = 5 # Maximum number of consecutive frames where a cell can disappear and still keep the same track ID.
     max_missed_frame = 5 # Maximum number of missed detections before terminating a track. Often used together with Kalman prediction.
 
-
+    # LDDMM matching hyperparameters
+    lddmm_distance_threshold = 50.0 # Maximum distance between parent and potential daughter centroids to compute LDDMM cost
+    lddmm_energy_threshold = 2.0 # Maximum acceptable LDDMM deformation energy to consider it a valid division
+    lddmm_iterations = 50 # Number of iterations for diffeomorphic matching optimization
+    lddmm_sigma = 10.0 # Smoothing parameter for LDDMM vector field
+    lddmm_step_size = 0.01 # Step size for LDDMM optimization
