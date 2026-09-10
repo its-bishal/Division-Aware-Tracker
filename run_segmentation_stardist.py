@@ -8,17 +8,8 @@ from albumentations import Resize, Compose
 from cellseg_models_pytorch.models.stardist import StarDist
 from cellseg_models_pytorch.utils import FileHandler
 
-# ---------------------------------------------------------------------------
-# NOTE on weights: cellseg_models_pytorch (csmp) is a *different* library
-# from the original TensorFlow `stardist` package. There is no
-# '2D_versatile_fluo' model here -- pretrained csmp StarDist checkpoints are
-# hosted at https://huggingface.co/csmp-hub (e.g. "hgsc_v1_efficientnet_b5").
-# Pick the checkpoint whose training domain best matches your images, or
-# swap in a path to your own fine-tuned .ckpt/.pth if you have one.
-# ---------------------------------------------------------------------------
 WEIGHTS = "hgsc_v1_efficientnet_b5"
 
-# csmp models require the spatial dims to be a multiple of 32.
 RESIZE_TO = 1024
 
 

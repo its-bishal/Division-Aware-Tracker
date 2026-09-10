@@ -5,24 +5,34 @@ from .tracks import Tracks
 from .tracks import Region
 from .recorder import Recorder
 from .kalman_filter import KalmanFilter
-from utils.configs import TrackerHyperParams
+from .unscented_kalman_filter import UnscentedKalmanFilter
 from .lddmm import compute_lddmm_cost
 
-
 class BiTracker:
-    def __init__(self):
+    def __init__(self, config=None):
+        if config is None:
+            from utils.configs import TrackerHyperParams
+            config = TrackerHyperParams('model_b')
+        self.config = config
 
-        self.minimal_tracklet_len = TrackerHyperParams.minimal_tracklet_length
-        self.roi_verify_max_iteration = TrackerHyperParams.roi_verify_threshold
-        self.roi_verify_punish_rate = TrackerHyperParams.roi_verify_punish_rate
-        self.using_kfgating = TrackerHyperParams.using_kfgrating
-        self.mitosis_th = TrackerHyperParams.mitosis_threshold
-        self.dis_th = TrackerHyperParams.distance_threshold
-        self.area_th = TrackerHyperParams.area_threshold
-        self.edge_pixel = TrackerHyperParams.edge_pixel
+        self.minimal_tracklet_len = self.config.minimal_tracklet_length
+        self.roi_verify_max_iteration = self.config.roi_verify_threshold
+        self.roi_verify_punish_rate = self.config.roi_verify_punish_rate
+        self.using_kfgating = getattr(self.config, 'using_kfgating', False)
+        self.mitosis_th = self.config.mitosis_threshold
+        self.dis_th = self.config.distance_threshold
+        self.area_th = self.config.area_threshold
+        self.edge_pixel = self.config.edge_pixel
         
-        self.kalman_filter = KalmanFilter()
-        self.tracks = Tracks()
+        # Select filter based on config (default to standard KF if not specified)
+        kf_type = getattr(self.config, 'kalman_filter_type', 'kalman')
+        if kf_type == 'ukf':
+            self.kalman_filter = UnscentedKalmanFilter()
+            print("Using Unscented Kalman Filter (UKF).")
+        else:
+            self.kalman_filter = KalmanFilter()
+            print("Using standard Kalman Filter (KF).")
+        self.tracks = Tracks(config=self.config)
         self.recorder = Recorder()
 
         self.frame_index = 0
@@ -156,7 +166,7 @@ class BiTracker:
                 center = ((bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2)
                 dist = np.sqrt((center[0] - parent_center[0])**2 + (center[1] - parent_center[1])**2)
                 
-                if dist < TrackerHyperParams.lddmm_distance_threshold:
+                if dist < getattr(self.config, 'lddmm_distance_threshold', 50.0):
                     candidates.append((det_id, region))
             
             if len(candidates) >= 2:
@@ -166,12 +176,12 @@ class BiTracker:
                 for (det1, reg1), (det2, reg2) in combinations(candidates, 2):
                     combined_mask = np.logical_or(reg1.mask > 0, reg2.mask > 0).astype(np.float32)
                     try:
-                        energy = compute_lddmm_cost(parent_mask, combined_mask, TrackerHyperParams)
+                        energy = compute_lddmm_cost(parent_mask, combined_mask, self.config)
                     except Exception as e:
                         print(f"LDDMM computation failed: {e}")
                         energy = float('inf')
                         
-                    if energy < best_energy and energy < TrackerHyperParams.lddmm_energy_threshold:
+                    if energy < best_energy and energy < getattr(self.config, 'lddmm_energy_threshold', 2.0):
                         best_energy = energy
                         best_pair = (det1, det2)
                 
@@ -279,6 +289,9 @@ class BiTracker:
 
                 for track_id in unassigned_tracks_id:
                     track = self.tracks.get_track_by_id(track_id)
+                    if track is None:
+                        # Track was already consumed as a mitosis parent or evicted — skip
+                        continue
                     track.update_track(frame_index=self.frame_index,
                                        det_id=None, 
                                        region=None,

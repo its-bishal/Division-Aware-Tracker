@@ -154,13 +154,9 @@ def compute_lddmm_cost(parent_mask, daughter_mask, config):
         loss_type=getattr(config, 'lddmm_loss_type', 'mse'),
         blur=getattr(config, 'lddmm_sinkhorn_blur', 0.05),
         reach=getattr(config, 'lddmm_sinkhorn_reach', 0.5),
-        device='cpu' # Assuming CPU for compatibility, can be changed to 'cuda'
+        device='cuda'
     )
     
-    # Optional: Crop the masks around the bounding box of the union to speed up computation
-    # For now, running on the full provided mask crops.
-    
-    # Need to disable gradients for the main tracking loop, only enable for optimization
     with torch.enable_grad(): 
         energy = matcher(parent_mask, daughter_mask)
         

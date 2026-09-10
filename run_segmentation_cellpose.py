@@ -1,6 +1,7 @@
 
 import os
 import cv2
+import re
 import json
 import numpy as np
 import torch
@@ -13,12 +14,8 @@ from cellpose import models, io
 # checkpoint below ("cpsam", Cellpose-SAM, aka the default model in
 # Cellpose 4+) works well across brightfield, phase-contrast, and
 # fluorescence images without picking a tissue-specific checkpoint.
-#
-# If you want the older style-specific models instead, swap MODEL_TYPE for
-# one of: "cyto3", "cyto2", "cyto", "nuclei". All are downloaded
-# automatically on first use and cached in $HOME/.cellpose/models/.
 # ---------------------------------------------------------------------------
-MODEL_TYPE = "cpsam"  # generalist model; good default for RBC / phase-contrast images
+MODEL_TYPE = "cyto3"  # generalist model; good default for RBC / phase-contrast images
 
 # Cellpose estimates cell diameter automatically if left as None. Set a
 # fixed value (in pixels) if you know your average cell size and want to
@@ -28,13 +25,6 @@ DIAMETER = None
 
 
 def process_masks(masks, area_threshold=20):
-    """
-    Extract bounding boxes from a Cellpose instance label mask.
-    `masks` is a 2D int array where each cell has a distinct integer label
-    and background is 0 (this is Cellpose's native output format, so no
-    connected-components step is needed the way it was for the StarDist
-    polygon-to-raster conversion).
-    """
     detections = []
     unique_labels = np.unique(masks)
     unique_labels = unique_labels[unique_labels > 0]
@@ -58,44 +48,49 @@ def main():
 
     model = models.CellposeModel(gpu=torch.cuda.is_available(), model_type=MODEL_TYPE)
 
-    image_dir = "images"
+    image_dir = "CellsU"
     if not os.path.exists(image_dir):
         print(f"Error: Directory {image_dir} not found.")
         return
 
+    # image_files = sorted(
+    #         [f for f in os.listdir(image_dir) if f.lower().endswith(valid_extensions)],
+    valid_extensions = (".tif", ".tiff")
     image_files = sorted(
-        [f for f in os.listdir(image_dir) if f.endswith(".png")],
-        key=lambda x: int(x.replace("image", "").replace(".png", "")),
+        [f for f in os.listdir(image_dir) if f.lower().endswith(valid_extensions)],
+        key=lambda x: [
+            int(text) if text.isdigit() else text.lower()
+            for text in re.split(r"(\d+)", x)
+        ],
     )
 
     print(f"Starting Cellpose segmentation on {len(image_files)} frames...")
 
     all_detections = {}
 
-    for img_name in image_files:
-        img_path = os.path.join(image_dir, img_name)
+    with torch.no_grad():
+        for img_name in image_files:
+            img_path = os.path.join(image_dir, img_name)
 
-        img = io.imread(img_path)  # returns HWC (RGB) or HW (grayscale)
+            img = io.imread(img_path)  # returns HWC (RGB) or HW (grayscale)
+            img_gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY) if img.ndim == 3 else img
 
-        # Cellpose does its own internal normalization (percentile-based,
-        # similar in spirit to what the StarDist script did manually), so
-        # no separate percentile_normalize() step is needed here.
-        #
-        # channels=[0, 0] tells Cellpose to treat the image as single-channel
-        # grayscale (no separate nuclear channel) -- appropriate for
-        # brightfield / phase-contrast RBC images. If you have a real
-        # two-channel image (e.g. cytoplasm + nucleus stain), set this to
-        # [1, 2] or similar per the Cellpose docs.
-        masks, flows, styles = model.eval(
-            img,
-            diameter=DIAMETER,
-            channels=[0, 0],
-        )
+            masks, flows, styles = model.eval(
+                img_gray,
+                diameter=15,          
+                channels=[0, 0],       
+                flow_threshold=0.4,    
+                cellprob_threshold=-1.0, 
+                resample=False
+            )
 
-        detections = process_masks(masks)
+            # INDENTED INSIDE THE LOOP:
+            detections = process_masks(masks)
+            all_detections[img_name] = detections
+            print(f"Segmented {img_name}: Found {len(detections)} cells.")
 
-        all_detections[img_name] = detections
-        print(f"Segmented {img_name}: Found {len(detections)} cells.")
+            if device == "cuda":
+                torch.cuda.empty_cache()
 
     output_file = "detections.json"
     with open(output_file, "w") as f:

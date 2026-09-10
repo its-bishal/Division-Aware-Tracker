@@ -2,7 +2,6 @@
 import numpy as np
 from .kalman_filter import chi2inv95
 from utils.bbox import area_ratio, distance_ratio, overlap_ratio
-from utils.configs import TrackerHyperParams
 
 
 class Region():
@@ -33,8 +32,8 @@ class Node:
         self.region = region
         self.bbox = region.bbox
 
-    def get_box(self, frame_index, recoder):
-        if frame_index - self.frame_index >= TrackerHyperParams.max_record_frame:
+    def get_box(self, frame_index, recoder, max_record_frame=500):
+        if frame_index - self.frame_index >= max_record_frame:
             return None
         return recoder.all_boxes[self.frame_index][self._id, :]
 
@@ -59,7 +58,6 @@ class Track:
 
         self._age = 1
         self._missed_frame = 0
-        # self._missed_detection_score = np.array(1e5)
         self._missed_detection_score = np.array(-1e5)
 
         self.parent = 0
@@ -68,7 +66,6 @@ class Track:
         self._id = Track._id_pool
         Track._id_pool += 1
 
-        # kalman mean and covariance
         self._mean, self._covariance = kf.initiate(measurement=init_node.bbox)
         self.predicted_bbox = None
 
@@ -101,7 +98,6 @@ class Track:
         else:
             raise ValueError('nodes should be a list')
 
-    # TODO using kalman prediction or smooth
     def smooth_trajectory(self, max_missed_frame):
         nodes = []
         for index in range(len(self._nodes)-1):
@@ -244,9 +240,8 @@ class Track:
             iou = float(history_iou[index])
             area_rto = float(history_area[index])
             dis_rto = float(history_dis[index])
-            if delta_frame < TrackerHyperParams.max_frame_gap:
-                # if iou < pow(TrackerHyperParams.iou_base, delta_frame) or area_rto > 2. or dis_rto > 1.0 or kf_gate:
-                if iou < pow(TrackerHyperParams.iou_base, delta_frame):
+            if delta_frame < self._max_frame_gap:
+                if iou < pow(self._iou_base, delta_frame):
                     return False
             else:
                 return False
@@ -255,11 +250,11 @@ class Track:
     def verify(self, frame_index, recorder, box_id):
         for n in self._nodes:
             delta_f = frame_index - n.frame_index
-            if delta_f < TrackerHyperParams.max_frame_gap:
+            if delta_f < self._max_frame_gap:
                 iou = n.get_iou(frame_index, recorder, box_id)
                 if iou is None:
                     continue
-                if iou < pow(TrackerHyperParams.iou_base, delta_f):
+                if iou < pow(self._iou_base, delta_f):
                     return False
         return True
 
@@ -279,10 +274,17 @@ class Tracks:
     2) keep the previous tracks
     """
 
-    def __init__(self, max_draw_track_node=20):
+    def __init__(self, config=None, max_draw_track_node=20):
         self.tracks = list()  # the set of tracks
         self.saved_tracks = list()
         self.max_drawing_track = max_draw_track_node
+
+        from utils.configs import BaseTrackerHyperParams as _Defaults
+        self._max_record_frame = getattr(config, 'max_record_frame', _Defaults.max_record_frame)
+        self._max_frame_gap    = getattr(config, 'max_frame_gap',    _Defaults.max_frame_gap)
+        self._iou_base         = getattr(config, 'iou_base',         _Defaults.iou_base)
+        self._max_missed_frame = getattr(config, 'max_missed_frame', 5)
+        self._max_objects      = getattr(config, 'max_objects',      _Defaults.max_objects)
 
     def __getitem__(self, item):
         return self.tracks[item]
@@ -290,6 +292,9 @@ class Tracks:
     def add_new_track(self, frame_index, det_id, regions, kalman_filter, track_id=None, parent=None):
         node = Node(frame_index, det_id, region=regions)
         t = Track(init_node=node, kf=kalman_filter)
+        # Inject config values into the Track so it can evaluate itself correctly
+        t._max_frame_gap    = self._max_frame_gap
+        t._iou_base         = self._iou_base
         if track_id is not None:
             t.track_id = track_id
         if parent is not None:
@@ -309,17 +314,14 @@ class Tracks:
         self.saved_tracks = [
             t for t in self.saved_tracks if len(t.nodes) >= minimal_len]
         for t in self.tracks:
-            t.smooth_trajectory(
-                max_missed_frame=TrackerHyperParams.max_missed_frame)
+            t.smooth_trajectory(max_missed_frame=self._max_missed_frame)
         for t in self.saved_tracks:
-            t.smooth_trajectory(
-                max_missed_frame=TrackerHyperParams.max_missed_frame)
+            t.smooth_trajectory(max_missed_frame=self._max_missed_frame)
         tracks = self.tracks + self.saved_tracks
-        # tracks = MergeUtils.merge(tracks,min_merge_threshold=TrackerHyperParams.min_merge_threshold)
         return tracks
 
     def volatile_tracks(self):  # delete the most oldest tracks acclerate
-        if len(self.tracks) > TrackerHyperParams.max_objects:
+        if len(self.tracks) > self._max_objects:
             all_missed_frames = [t.missed_frame for t in self.tracks]
             oldest_track_index = np.argmax(all_missed_frames)
             self.saved_tracks = self.saved_tracks + \
@@ -333,10 +335,11 @@ class Tracks:
             if t.track_id in saved_ids:
                 saved_track_set.append(i)
                 continue
-            if t.missed_frame > TrackerHyperParams.max_missed_frame:
+            if t.missed_frame > self._max_missed_frame:
                 saved_track_set.append(i)
                 continue
             keep_track_set.append(i)
         self.saved_tracks = self.saved_tracks + \
             [self.tracks[i] for i in saved_track_set]
         self.tracks = [self.tracks[i] for i in keep_track_set]
+

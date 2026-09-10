@@ -1,6 +1,7 @@
 import os
 import cv2
 import json
+import re
 import torch
 import numpy as np
 from torchvision import transforms
@@ -14,28 +15,64 @@ def process_mask(mask, threshold=0.5):
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
     
     detections = []
-    # start from 1 to ignore background label (0)
     for i in range(1, num_labels):
         x, y, w, h, area = stats[i]
-        # Ignore very small detections
         if area > 20: 
             detections.append([int(x), int(y), int(x + w), int(y + h)])
             
     return detections
 
+
+def sort_key(filename):
+    """Natural sorting key: splits string into text and integer chunks."""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r'(\d+)', filename)]
+
+
+def load_tiff_image(img_path):
+    frame = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+
+    if frame is None:
+        return None
+
+    converters = {
+        2: lambda img: cv2.cvtColor(img, cv2.COLOR_GRAY2RGB),
+        3: lambda img: cv2.cvtColor(img, cv2.COLOR_BGR2RGB),
+        4: lambda img: cv2.cvtColor(img, cv2.COLOR_BGRA2RGB),
+    }
+
+    frame = converters.get(
+        len(frame.shape),
+        lambda img: img
+    )(frame)
+
+    normalization = {
+        np.uint8: 1 / 255.0,
+        np.uint16: 1 / 65535.0,
+    }
+
+    scale = normalization.get(frame.dtype.type, 1.0)
+
+    return (frame * scale).astype(np.float32)
+
+
 def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # 1. Initialize U-Net
     print("Initializing U-Net...")
     model = UNet(in_channels=3, out_channels=2).to(device)
     model.load_state_dict(torch.load('unet_carvana_scale0.5.pth'))
     model.eval()
     
-    image_dir = 'images'
+    image_dir = 'images' #'images'
     image_files = sorted([f for f in os.listdir(image_dir) if f.endswith('.png')], 
                          key=lambda x: int(x.replace('image', '').replace('.png', '')))
+    
+    # valid_exts = ('.tiff', '.tif', '.TIFF', '.TIF')
+    # image_files = sorted(
+    #     [f for f in os.listdir(image_dir) if f.endswith(valid_exts)],
+    #     key=sort_key
+    # )
     
     preprocess = transforms.Compose([
         transforms.ToTensor(),
@@ -48,6 +85,7 @@ def main():
     for img_name in image_files:
         img_path = os.path.join(image_dir, img_name)
         frame = cv2.imread(img_path)
+        # frame = load_tiff_image(img_path)
         if frame is None:
             continue
             
@@ -55,15 +93,12 @@ def main():
         
         with torch.no_grad():
             output = model(img_tensor)
-            # The model outputs 2 channels (background and foreground).
-            # We take the argmax across the channel dimension to get the predicted class.
             mask = output.argmax(dim=1).squeeze().cpu().numpy()
             
         detections = process_mask(mask)
         all_detections[img_name] = detections
         print(f"Segmented {img_name}: Found {len(detections)} cells.")
         
-    # Store segmentation results
     with open("detections.json", "w") as f:
         json.dump(all_detections, f, indent=4)
         
@@ -71,3 +106,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
